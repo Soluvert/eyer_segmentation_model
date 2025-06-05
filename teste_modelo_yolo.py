@@ -1,52 +1,49 @@
-import cv2
+import os
 import numpy as np
 import tensorflow as tf
-from scripts.attention_unet import ModelUnetAttention
-import os
+import matplotlib.pyplot as plt
+import cv2
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
 
 # Carregar modelos
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 model_unet_path = os.path.join(BASE_DIR, "models/model_eyer_float32.tflite")
+model_detector_path = os.path.join(BASE_DIR, "models/best_float32.tflite")
+
 unet_model = tf.lite.Interpreter(model_path=model_unet_path)
-
-model_crop_path = os.path.join(BASE_DIR, "models/best_float32.tflite")
-crop_model = tf.lite.Interpreter(model_path=model_crop_path)
-
+detector_model = tf.lite.Interpreter(model_path=model_detector_path)
 
 unet_model.allocate_tensors()
+detector_model.allocate_tensors()
 
-crop_model.allocate_tensors()
-
-# Pré-processamento para o YOLO
-def preprocess_yolo(image, size=1088):
-    resized = cv2.resize(image, (size, size))
-    input_data = resized.astype(np.float32) / 255.0
-    input_data = np.expand_dims(input_data, axis=0)
+# Pré-processamento da imagem (canal verde replicado como RGB falso)
+def preprocess_image(image_np, size, dtype=np.float32):
+    green_channel = image_np[..., 1] / 255.0
+    green_rgb = np.stack([green_channel] * 3, axis=-1)  # (H, W, 3)
+    resized = cv2.resize(green_rgb, (size, size) if isinstance(size, tuple) else (size, size))
+    input_data = np.expand_dims(resized, axis=0).astype(dtype)
     return input_data, resized
 
-# Inferência do YOLO e conversão da bbox para pixels
-def run_yolo_inference(image):
-    input_data, resized = preprocess_yolo(image)
-    input_details = crop_model.get_input_details()
-    output_details = crop_model.get_output_details()
+# Inferência do modelo de detecção
+def run_detection(preprocessed_image):
+    input_details = detector_model.get_input_details()
+    output_details = detector_model.get_output_details()
 
-    crop_model.set_tensor(input_details[0]['index'], input_data)
-    crop_model.invoke()
-    output_data = crop_model.get_tensor(output_details[0]['index'])[0]
+    detector_model.set_tensor(input_details[0]['index'], preprocessed_image)
+    detector_model.invoke()
+    output_data = detector_model.get_tensor(output_details[0]['index'])[0]
 
     scores = output_data[:, 4]
     best_idx = np.argmax(scores)
     if scores[best_idx] < 0.3:
         raise ValueError("❌ Nenhuma detecção com confiança suficiente.")
 
-    bbox_normalized = output_data[best_idx, :4]
-    bbox_pixels = bbox_normalized * 1088
-    return bbox_pixels, resized
+    bbox = output_data[best_idx, :4] * 1088
+    return bbox
 
-# Recorte quadrado e centralizado com bbox em pixels
+# Recorte quadrado e centralizado
 def crop_and_resize(image, bbox, original_size=1088, target_size=256):
     x1, y1, x2, y2 = bbox.astype(int)
-
     cx = int((x1 + x2) / 2)
     cy = int((y1 + y2) / 2)
     half_size = int(max(x2 - x1, y2 - y1) / 2 * 1.2)
@@ -57,8 +54,6 @@ def crop_and_resize(image, bbox, original_size=1088, target_size=256):
     y2_square = min(original_size, cy + half_size)
 
     cropped = image[y1_square:y2_square, x1_square:x2_square]
-
-    # Garantir corte quadrado se necessário
     h, w = cropped.shape[:2]
     if h != w:
         side = min(h, w)
@@ -70,67 +65,54 @@ def crop_and_resize(image, bbox, original_size=1088, target_size=256):
     resized_crop = cv2.resize(cropped, (target_size, target_size))
     return resized_crop
 
-# Pré-processamento do recorte: canal verde → normalizado → (1, 256, 256, 1)
-def preprocess_for_unet(image_rgb_crop):
-    green_channel = image_rgb_crop[..., 1] / 255.0
-    green_channel = np.expand_dims(green_channel, axis=-1)  # (256, 256, 1)
-    return np.expand_dims(green_channel, axis=0).astype(np.float32)  # (1, 256, 256, 1)
-
-# Pipeline completo
+# Pipeline principal
 def run_pipeline(image_path):
-    # Carregar e redimensionar a imagem
-    image = cv2.imread(image_path)
-    if image is None:
-        raise FileNotFoundError(f"❌ Imagem não encontrada: {image_path}")
-    
-    image = cv2.resize(image, (1088, 1088))  # Compatível com YOLO
+    # ⚠️ Lê imagem como RGB (como no treino)
+    image_rgb = load_img(image_path, target_size=(1088, 1088))
+    image_rgb = img_to_array(image_rgb).astype("uint8")  # (1088, 1088, 3) - RGB
 
-    # Inferência YOLO para obter bbox
-    bbox, _ = run_yolo_inference(image)
+    # Pré-processamento → canal verde expandido para 3 canais
+    input_data, normalized_image = preprocess_image(image_rgb, size=1088)
+
+    # Detecção
+    bbox = run_detection(input_data)
     print(f"📦 BBox usada (pixels): {bbox}")
 
-    # Recorte e redimensionamento
-    cropped = crop_and_resize(image, bbox)
+    # Recorte na imagem normalizada
+    cropped_rgb = crop_and_resize(normalized_image, bbox, original_size=1088, target_size=256)
 
-    # Pré-processamento para U-Net
-    input_unet = preprocess_for_unet(cropped)
-
-    # Inferência com TFLite (U-Net)
+    # Segmentação → extrai canal verde do recorte e adapta dtype
     input_details = unet_model.get_input_details()
     output_details = unet_model.get_output_details()
 
-    # Certificar dtype
-    # Certificar dtype
-    input_unet = input_unet.astype(input_details[0]['dtype'])  # ✅ CORRETO
+    green_channel = cropped_rgb[..., 1]  # (256, 256)
+    green_channel = np.expand_dims(green_channel, axis=-1)  # (256, 256, 1)
+    input_unet = np.expand_dims(green_channel, axis=0).astype(input_details[0]['dtype'])  # (1, 256, 256, 1)
 
-
-    # Executar inferência
+    # Inferência com U-Net
     unet_model.set_tensor(input_details[0]['index'], input_unet)
     unet_model.invoke()
     pred_mask = unet_model.get_tensor(output_details[0]['index'])[0]
 
-    return image, cropped, pred_mask
+    return image_rgb, cropped_rgb, pred_mask
 
-
+# Execução principal
 if __name__ == "__main__":
-    image_path = "caminho/absoluto/para/sua/imagem.jpg"  # Substitua pelo caminho da sua imagem
+    image_path = "caminho/para/sua/imagem.jpg"  # Substitua pelo caminho da sua imagem
 
     image, cropped, pred_mask = run_pipeline(image_path)
 
-    # Visualização lado a lado
-    import matplotlib.pyplot as plt
-
     fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-    axs[0].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    axs[0].imshow(image.astype("uint8"))
     axs[0].set_title("Imagem Original")
     axs[0].axis("off")
 
-    axs[1].imshow(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+    axs[1].imshow(cropped)
     axs[1].set_title("Recorte Centralizado")
     axs[1].axis("off")
 
     axs[2].imshow(np.argmax(pred_mask, axis=-1), cmap="jet")
-    axs[2].set_title("Máscara U-Net (argmax)")
+    axs[2].set_title("Máscara Segmentada")
     axs[2].axis("off")
 
     plt.tight_layout()
