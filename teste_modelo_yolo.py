@@ -2,13 +2,20 @@ import cv2
 import numpy as np
 import tensorflow as tf
 from scripts.attention_unet import ModelUnetAttention
+import os
 
 # Carregar modelos
-interpreter = tf.lite.Interpreter(model_path="/home/andre/Desenvolvimento/SEGMENTATIONOCOD/NEW_YOLO_MODEL/runs/detect/optic_disc_yolo/weights/best_saved_model/best_float32.tflite")
-interpreter.allocate_tensors()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+model_unet_path = os.path.join(BASE_DIR, "models/model_eyer_float32.tflite")
+unet_model = tf.lite.Interpreter(model_path=model_unet_path)
 
-unet_model = tf.lite.Interpreter(model_path="/home/andre/Desenvolvimento/SEGMENTATIONOCOD/models/model_eyer_float32.tflite")
+model_crop_path = os.path.join(BASE_DIR, "models/best_float32.tflite")
+crop_model = tf.lite.Interpreter(model_path=model_crop_path)
+
+
 unet_model.allocate_tensors()
+
+crop_model.allocate_tensors()
 
 # Pré-processamento para o YOLO
 def preprocess_yolo(image, size=1088):
@@ -20,12 +27,12 @@ def preprocess_yolo(image, size=1088):
 # Inferência do YOLO e conversão da bbox para pixels
 def run_yolo_inference(image):
     input_data, resized = preprocess_yolo(image)
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
+    input_details = crop_model.get_input_details()
+    output_details = crop_model.get_output_details()
 
-    interpreter.set_tensor(input_details[0]['index'], input_data)
-    interpreter.invoke()
-    output_data = interpreter.get_tensor(output_details[0]['index'])[0]
+    crop_model.set_tensor(input_details[0]['index'], input_data)
+    crop_model.invoke()
+    output_data = crop_model.get_tensor(output_details[0]['index'])[0]
 
     scores = output_data[:, 4]
     best_idx = np.argmax(scores)
@@ -106,7 +113,7 @@ def run_pipeline(image_path):
 
 
 if __name__ == "__main__":
-    image_path = "/home/andre/Desenvolvimento/SEGMENTATIONOCOD/data/eyer_data_new/Images_Test/0020.png"
+    image_path = "caminho/absoluto/para/sua/imagem.jpg"  # Substitua pelo caminho da sua imagem
 
     image, cropped, pred_mask = run_pipeline(image_path)
 
