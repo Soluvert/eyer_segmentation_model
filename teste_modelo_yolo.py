@@ -16,6 +16,14 @@ detector_model = tf.lite.Interpreter(model_path=model_detector_path)
 unet_model.allocate_tensors()
 detector_model.allocate_tensors()
 
+# Função para inferir lateralidade com base na posição do disco óptico
+def infer_laterality_from_bbox(bbox, image_width=1088):
+    x_center = (bbox[0] + bbox[2]) / 2
+    if x_center < image_width / 2:
+        return "OD (Olho Direito)"
+    else:
+        return "OE (Olho Esquerdo)"
+
 # Pré-processamento da imagem (canal verde replicado como RGB falso)
 def preprocess_image(image_np, size, dtype=np.float32):
     green_channel = image_np[..., 1] / 255.0
@@ -77,6 +85,10 @@ def run_pipeline(image_path):
     # Detecção
     bbox = run_detection(input_data)
     print(f"📦 BBox usada (pixels): {bbox}")
+    
+    # ➕ Inferência da lateralidade
+    laterality = infer_laterality_from_bbox(bbox, image_width=1088)
+    print(f"👁️ Lateralidade inferida: {laterality}")
 
     # Recorte na imagem normalizada
     cropped_rgb = crop_and_resize(normalized_image, bbox, original_size=1088, target_size=256)
@@ -98,7 +110,7 @@ def run_pipeline(image_path):
 
 # Execução principal
 if __name__ == "__main__":
-    image_path = "caminho/para/sua/imagem.jpg"  # Substitua pelo caminho da sua imagem
+    image_path = "/home/andre/Desenvolvimento/SEGMENTATIONOCOD/data/eyer_data_new/Images_Test/0020.png"  # Substitua pelo caminho da sua imagem
 
     image, cropped, pred_mask = run_pipeline(image_path)
 
