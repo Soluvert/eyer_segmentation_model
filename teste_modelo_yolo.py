@@ -3,11 +3,10 @@ import numpy as np
 import cv2
 import tensorflow as tf
 import matplotlib.pyplot as plt
-from scripts.attention_unet import ModelUnetAttention
 
 # === Carregar modelos ===
 yolo_model = tf.keras.models.load_model(
-    "/home/andre/Desenvolvimento/EYER_ENTREGA/models/model_recorte_eyer.keras"
+    "/home/andre/Desenvolvimento/EYER_ENTREGA/models/model_recorte_eyer_menor.keras"
 )
 unet_model = tf.keras.models.load_model(
     "/home/andre/Desenvolvimento/EYER_ENTREGA/models/model_eyer.keras"
